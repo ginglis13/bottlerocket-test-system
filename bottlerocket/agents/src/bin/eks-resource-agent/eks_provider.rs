@@ -318,6 +318,15 @@ impl Create for EksCreator {
             memo.creation_policy
         );
 
+        info!(
+            "Cluster will be created via endpoint {}",
+            &spec
+                .configuration
+                .eks_service_endpoint
+                .clone()
+                .unwrap_or("default".to_string())
+        );
+
         info!("Getting AWS secret");
         memo.current_status = "Getting AWS secret".to_string();
         client
@@ -833,7 +842,7 @@ async fn instance_profile_arn(
 
 async fn does_cluster_exist(name: &str, aws_clients: &AwsClients) -> ProviderResult<bool> {
     let describe_cluster_result = aws_clients
-        .eks_client
+        .eks_client // todo: I need to set the eks endpoint here
         .describe_cluster()
         .name(name)
         .send()

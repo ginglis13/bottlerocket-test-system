@@ -33,6 +33,7 @@ const CLUSTER_KUBECONFIG: &str = "/local/cluster.kubeconfig";
 const PROVISIONER_YAML: &str = "/local/provisioner.yaml";
 const TAINTED_NODEGROUP_NAME: &str = "tainted-nodegroup";
 const TEMPLATE_PATH: &str = "/local/cloudformation.yaml";
+// const DEFAULT_EKS_ENDPOINT: &str = "https://eks.us-west-2.amazonaws.com";
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -100,6 +101,11 @@ impl Create for Ec2KarpenterCreator {
             .karpenter_version
             .unwrap_or_else(|| KARPENTER_VERSION.to_string());
 
+        // let endpoint = spec.configuration.endpoint;
+        // .unwrap_or_else(|| DEFAULT_EKS_ENDPOINT.to_string());
+
+        info!("endpoint is {}", &spec.configuration.endpoint);
+
         let stack_name = format!("Karpenter-{}", spec.configuration.cluster_name);
 
         let mut resources = Resources::Unknown;
@@ -135,7 +141,7 @@ impl Create for Ec2KarpenterCreator {
             &spec.configuration.assume_role,
             &None,
             &Some(spec.configuration.region.clone()),
-            &None,
+            &Some(spec.configuration.endpoint.clone()), // plumb through the service endpoint for service calls
             true,
         )
         .await
@@ -285,6 +291,22 @@ impl Create for Ec2KarpenterCreator {
                 ),
             ));
         }
+
+        // Add tags to the cluster itself
+        // info!(
+        //     "Adding Karpenter tags to cluster: {:#?}",
+        //     &spec.configuration.cluster_name
+        // );
+        // let cluster_arn = eks_client
+        //     .describe_cluster(&spec.configuration.cluster_name)
+        //     .await?;
+        // eks_client
+        //     .tag_resource()
+        //     // .resource_arn(&spec.configuration.cluster_arn)
+        //     .tags("karpenter.sh/discovery", &spec.configuration.cluster_name)
+        //     .send()
+        //     .await
+        //     .context(resources, "Unable to tag cluster")?;
 
         info!(
             "Adding Karpenter tags to subnets: {:#?}",
