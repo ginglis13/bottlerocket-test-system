@@ -33,6 +33,8 @@ const CLUSTER_KUBECONFIG: &str = "/local/cluster.kubeconfig";
 const PROVISIONER_YAML: &str = "/local/provisioner.yaml";
 const TAINTED_NODEGROUP_NAME: &str = "tainted-nodegroup";
 const TEMPLATE_PATH: &str = "/local/cloudformation.yaml";
+// TODO
+// const DEFAULT_EKS_ENDPOINT: &str = "https://eks.us-west-2.amazonaws.com";
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -100,6 +102,20 @@ impl Create for Ec2KarpenterCreator {
             .karpenter_version
             .unwrap_or_else(|| KARPENTER_VERSION.to_string());
 
+        // let endpoint = spec.configuration.endpoint;
+        // .unwrap_or_else(|| DEFAULT_EKS_ENDPOINT.to_string());
+
+        info!("karpenter_version is {}", &karpenter_version);
+        info!("endpoint is '{}'", &spec.configuration.endpoint); // This is the cluster endpoint, not the eks_service_endpoint
+        info!(
+            "service endpoint is '{}'",
+            &spec
+                .configuration
+                .eks_service_endpoint
+                .clone()
+                .unwrap_or_default()
+        );
+
         let stack_name = format!("Karpenter-{}", spec.configuration.cluster_name);
 
         let mut resources = Resources::Unknown;
@@ -135,13 +151,16 @@ impl Create for Ec2KarpenterCreator {
             &spec.configuration.assume_role,
             &None,
             &Some(spec.configuration.region.clone()),
+            // &Some(spec.configuration.endpoint.clone()), // plumb through the service endpoint for service calls // wrong endpoint
+            // &spec.configuration.eks_service_endpoint,
+            // &Some("https://api.beta.us-west-2.wesley.amazonaws.com".to_string()), // in my personal account, this leads to auth 403
             &None,
             true,
         )
         .await
         .context(resources, "Error creating config")?;
         let ec2_client = aws_sdk_ec2::Client::new(&shared_config);
-        let eks_client = aws_sdk_eks::Client::new(&shared_config);
+        let eks_client = aws_sdk_eks::Client::new(&shared_config); // I think here I want an eks config
         let sts_client = aws_sdk_sts::Client::new(&shared_config);
         let cfn_client = aws_sdk_cloudformation::Client::new(&shared_config);
 
@@ -170,7 +189,9 @@ impl Create for Ec2KarpenterCreator {
             .get_caller_identity()
             .send()
             .await
-            .context(resources, "Unable to get caller identity")?
+            // I need a new tag every time since the image gets cached. This was hit because of the endpoint being wrong;
+            // I was using the cluster endpoint, not EKS service endpoint
+            .context(resources, "Unable to get caller identity")? // this is getting hit?
             .account()
             .context(resources, "The caller identity was missing an account id")?
             .to_string();
@@ -285,6 +306,22 @@ impl Create for Ec2KarpenterCreator {
                 ),
             ));
         }
+
+        // Add tags to the cluster itself
+        // info!(
+        //     "Adding Karpenter tags to cluster: {:#?}",
+        //     &spec.configuration.cluster_name
+        // );
+        // let cluster_arn = eks_client
+        //     .describe_cluster(&spec.configuration.cluster_name)
+        //     .await?;
+        // eks_client
+        //     .tag_resource()
+        //     // .resource_arn(&spec.configuration.cluster_arn)
+        //     .tags("karpenter.sh/discovery", &spec.configuration.cluster_name)
+        //     .send()
+        //     .await
+        //     .context(resources, "Unable to tag cluster")?;
 
         info!(
             "Adding Karpenter tags to subnets: {:#?}",

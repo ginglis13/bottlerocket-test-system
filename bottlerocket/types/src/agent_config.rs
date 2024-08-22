@@ -324,6 +324,11 @@ pub struct Ec2KarpenterConfig {
     /// The eks server endpoint
     pub endpoint: String,
 
+    /// The endpoint to create the EKS client with.
+    /// This applicable when the cluster already exists at some EKS service endpoint, and we'd like
+    /// to retrieve its details.
+    pub eks_service_endpoint: Option<String>,
+
     /// The cluster security group
     pub cluster_sg: String,
 

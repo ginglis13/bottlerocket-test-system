@@ -37,15 +37,15 @@ ENV CARGO_HOME=/src/.cargo
 WORKDIR /src/bottlerocket/agents/
 RUN cp -p /src/LICENSE-APACHE /src/LICENSE-MIT /usr/share/licenses/testsys && \
     /usr/libexec/tools/bottlerocket-license-scan \
-      --clarify /src/clarify.toml \
-      --spdx-data /usr/libexec/tools/spdx-data \
-      --out-dir /usr/share/licenses/testsys/vendor \
-      cargo --offline --locked Cargo.toml
+    --clarify /src/clarify.toml \
+    --spdx-data /usr/libexec/tools/spdx-data \
+    --out-dir /usr/share/licenses/testsys/vendor \
+    cargo --offline --locked Cargo.toml
 RUN --mount=type=cache,mode=0777,target=/src/target \
     cargo install --offline --locked \
-      --target ${ARCH}-bottlerocket-linux-musl \
-      --path . \
-      --root .
+    --target ${ARCH}-bottlerocket-linux-musl \
+    --path . \
+    --root .
 
 # =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^= =^..^=
 # Builds the EC2 resource agent image
@@ -65,6 +65,12 @@ ENTRYPOINT ["./ec2-resource-agent"]
 FROM public.ecr.aws/amazonlinux/amazonlinux:2 as ec2-karpenter-resource-agent
 
 RUN yum install -y tar && yum -y clean all && rm -fr /var/cache
+
+# Install the awscli
+RUN yum install -y unzip
+RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" && \
+    unzip awscliv2.zip && \
+    ./aws/install
 
 # Copy eksctl
 COPY --from=tools /eksctl /usr/bin/eksctl
@@ -120,8 +126,8 @@ ENTRYPOINT ["./vsphere-vm-resource-agent"]
 FROM public.ecr.aws/amazonlinux/amazonlinux:2 as eks-resource-agent
 RUN yum install -y unzip
 RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" && \
-            unzip awscliv2.zip && \
-            ./aws/install
+    unzip awscliv2.zip && \
+    ./aws/install
 
 # Copy eksctl
 COPY --from=tools /eksctl /usr/bin/eksctl
@@ -181,8 +187,8 @@ CMD dockerd --storage-driver vfs &>/dev/null & ./vsphere-k8s-cluster-resource-ag
 FROM public.ecr.aws/amazonlinux/amazonlinux:2 as metal-k8s-cluster-resource-agent
 
 RUN yum install -y \
-        openssh-clients \
-        tar \
+    openssh-clients \
+    tar \
     && yum clean all
 RUN amazon-linux-extras install -y docker
 
