@@ -289,6 +289,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-autoscaling"
+version = "1.39.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d058e39bd27297941dec95d07189c76bbbd44ec4eb43f4d7ddf670395493bab1"
+dependencies = [
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-query",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-smithy-xml",
+ "aws-types",
+ "http 0.2.12",
+ "once_cell",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-cloudformation"
 version = "1.40.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -754,6 +777,7 @@ dependencies = [
  "agent-common",
  "agent-utils",
  "async-trait",
+ "aws-sdk-autoscaling",
  "aws-sdk-cloudformation",
  "aws-sdk-ec2",
  "aws-sdk-ecs",

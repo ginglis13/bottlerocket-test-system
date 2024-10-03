@@ -382,7 +382,6 @@ impl Create for EksCreator {
         let kubeconfig_dir = temp_dir().join("kubeconfig.yaml");
 
         if do_create {
-            info!("Creating cluster with eksctl");
             memo.current_status = "Creating cluster".to_string();
             memo.provisioning_started = true;
             client
@@ -526,7 +525,8 @@ async fn nodegroup_iam_role(
         .map(|s| s.to_string())
 }
 
-fn write_kubeconfig(
+/// Write a cluster's kubeconfig to a path
+pub fn write_kubeconfig(
     cluster_name: &str,
     endpoint: &Option<String>,
     region: &str,
@@ -565,6 +565,8 @@ fn write_kubeconfig(
     Ok(())
 }
 
+// This function finds the subnet IDs and SG; it uses the eks_client
+// configured with the endpoint, so we should be good to go!
 async fn created_cluster(
     encoded_kubeconfig: String,
     cluster_name: &str,

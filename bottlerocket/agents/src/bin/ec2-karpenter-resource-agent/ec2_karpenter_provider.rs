@@ -23,18 +23,70 @@ use std::collections::HashSet;
 use std::convert::TryInto;
 use std::fmt::Debug;
 use std::fs;
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 use testsys_model::{Configuration, SecretName};
 use tokio::fs::read_to_string;
 
 const KARPENTER_VERSION: &str = "0.37.0";
-const CLUSTER_KUBECONFIG: &str = "/local/cluster.kubeconfig";
+const CLUSTER_KUBECONFIG: &str = "/local/cluster.kubeconfig"; // this is giving a OS NotFound when used with aws eks cli
 const PROVISIONER_YAML: &str = "/local/provisioner.yaml";
 const TAINTED_NODEGROUP_NAME: &str = "tainted-nodegroup";
 const TEMPLATE_PATH: &str = "/local/cloudformation.yaml";
 // TODO
 // const DEFAULT_EKS_ENDPOINT: &str = "https://eks.us-west-2.amazonaws.com";
+
+/// Make this a shared util!
+fn write_kubeconfig(
+    cluster_name: &str,
+    endpoint: &Option<String>,
+    region: &str,
+    kubeconfig_dir: &Path,
+) -> ProviderResult<()> {
+    info!("Updating kubeconfig file");
+    let mut aws_cli_args = vec![
+        "eks",
+        "update-kubeconfig",
+        "--region",
+        region,
+        "--name",
+        cluster_name,
+        "--kubeconfig",
+        kubeconfig_dir.to_str().context(
+            Resources::Remaining,
+            format!("Unable to convert '{:?}' to string path", kubeconfig_dir),
+        )?,
+    ];
+    if let Some(endpoint) = endpoint {
+        info!("Using EKS service endpoint: {}", endpoint);
+        aws_cli_args.append(&mut vec!["--endpoint", endpoint]);
+    }
+    info!("Calling with args {:#?}", aws_cli_args);
+    let status = Command::new("aws")
+        .args(aws_cli_args)
+        .status()
+        .context(Resources::Remaining, "Failed update kubeconfig")?;
+
+    if !status.success() {
+        return Err(ProviderError::new_with_context(
+            Resources::Remaining,
+            format!("Failed update kubeconfig with status code {}", status),
+        ));
+    }
+    info!("Successfully wrote the kubeconfig to {:#?}", kubeconfig_dir);
+
+    Ok(())
+}
+
+// fn cluster_oidc_endpoint() {
+//     // export OIDC_ENDPOINT=$(isengard 359404537045 Administrator exec --\
+//     //     aws eks describe-cluster \
+//     //       --endpoint ${AWS_EKS_ENDPOINT} \
+//     //       --name ${CLUSTER_NAME} \
+//     //       --query "cluster.identity.oidc.issuer" \
+//     //       --output text)
+// }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -102,11 +154,9 @@ impl Create for Ec2KarpenterCreator {
             .karpenter_version
             .unwrap_or_else(|| KARPENTER_VERSION.to_string());
 
-        // let endpoint = spec.configuration.endpoint;
-        // .unwrap_or_else(|| DEFAULT_EKS_ENDPOINT.to_string());
-
-        info!("karpenter_version is {}", &karpenter_version);
-        info!("endpoint is '{}'", &spec.configuration.endpoint); // This is the cluster endpoint, not the eks_service_endpoint
+        // This is the cluster endpoint, not the eks_service_endpoint
+        // Is this the OIDC endpoint?
+        info!("endpoint is '{}'", &spec.configuration.endpoint);
         info!(
             "service endpoint is '{}'",
             &spec
@@ -151,51 +201,90 @@ impl Create for Ec2KarpenterCreator {
             &spec.configuration.assume_role,
             &None,
             &Some(spec.configuration.region.clone()),
-            // &Some(spec.configuration.endpoint.clone()), // plumb through the service endpoint for service calls // wrong endpoint
-            // &spec.configuration.eks_service_endpoint,
-            // &Some("https://api.beta.us-west-2.wesley.amazonaws.com".to_string()), // in my personal account, this leads to auth 403
             &None,
             true,
         )
         .await
         .context(resources, "Error creating config")?;
+
+        let eks_config = aws_config(
+            &spec.secrets.get(AWS_CREDENTIALS_SECRET_NAME),
+            &spec.configuration.assume_role,
+            &None,
+            &Some(spec.configuration.region.clone()),
+            &spec.configuration.eks_service_endpoint,
+            true,
+        )
+        .await
+        .context(resources, "Error creating config")?;
         let ec2_client = aws_sdk_ec2::Client::new(&shared_config);
-        let eks_client = aws_sdk_eks::Client::new(&shared_config); // I think here I want an eks config
+        let eks_client = aws_sdk_eks::Client::new(&eks_config); // I think here I want an eks only config with the endpoint set
         let sts_client = aws_sdk_sts::Client::new(&shared_config);
         let cfn_client = aws_sdk_cloudformation::Client::new(&shared_config);
 
         info!("Writing cluster's kubeconfig to {}", CLUSTER_KUBECONFIG);
-        let status = Command::new("eksctl")
-            .args([
-                "utils",
-                "write-kubeconfig",
-                "-r",
-                &spec.configuration.region,
-                &format!("--cluster={}", &spec.configuration.cluster_name),
-                &format!("--kubeconfig={}", CLUSTER_KUBECONFIG),
-            ])
-            .status()
-            .context(Resources::Remaining, "Failed write kubeconfig")?;
+        // use the write_kubeconfig
+        // write_kubeconfig(
+        //     &spec.configuration.cluster_name,
+        //     &spec.configuration.eks_service_endpoint,
+        //     &spec.configuration.region,
+        //     &Path::new(CLUSTER_KUBECONFIG),
+        // )
+        // .context(Resources::Remaining, "Failed to write kubeconfig")?;
+        // let status = Command::new("eksctl")
+        //     .args([
+        //         "utils",
+        //         "write-kubeconfig",
+        //         "-r",
+        //         &spec.configuration.region,
+        //         &format!("--cluster={}", &spec.configuration.cluster_name),
+        //         &format!("--kubeconfig={}", CLUSTER_KUBECONFIG),
+        //     ])
+        //     .status()
+        //     .context(Resources::Remaining, "Failed write kubeconfig")?;
 
-        if !status.success() {
-            return Err(ProviderError::new_with_context(
-                Resources::Remaining,
-                format!("Failed write kubeconfig with status code {}", status),
-            ));
-        }
+        // if !status.success() {
+        //     return Err(ProviderError::new_with_context(
+        //         Resources::Remaining,
+        //         format!("Failed write kubeconfig with status code {}", status),
+        //     ));
+        // }
+
+        match write_kubeconfig(
+            &spec.configuration.cluster_name,
+            &spec.configuration.eks_service_endpoint,
+            &spec.configuration.region,
+            Path::new(CLUSTER_KUBECONFIG),
+        ) {
+            Ok(_) => info!("Wrote kubeconfig to {}", CLUSTER_KUBECONFIG),
+            Err(error) => {
+                return Err(ProviderError::new_with_context(
+                    Resources::Remaining,
+                    format!("Failed write kubeconfig with error {}", error),
+                ));
+            }
+        };
 
         info!("Getting the AWS account id");
         let account_id = sts_client
             .get_caller_identity()
             .send()
             .await
-            // I need a new tag every time since the image gets cached. This was hit because of the endpoint being wrong;
-            // I was using the cluster endpoint, not EKS service endpoint
-            .context(resources, "Unable to get caller identity")? // this is getting hit?
+            .context(resources, "Unable to get caller identity")?
             .account()
             .context(resources, "The caller identity was missing an account id")?
             .to_string();
         info!("Using account '{account_id}'");
+
+        let arn = sts_client
+            .get_caller_identity()
+            .send()
+            .await
+            .context(resources, "Unable to get caller identity")?
+            .arn()
+            .context(resources, "The caller identity was missing an account id")?
+            .to_string();
+        info!("Using arn '{arn}'");
 
         memo.cloud_formation_stack_exists = true;
         client
@@ -208,7 +297,7 @@ impl Create for Ec2KarpenterCreator {
             .create_stack()
             .stack_name(&stack_name)
             .template_body(
-                read_to_string(TEMPLATE_PATH)
+                read_to_string(TEMPLATE_PATH) // TODO: do I need this template to have cluster service endpoint?
                     .await
                     .context(Resources::Clear, "Unable to read cloudformation template")?,
             )
@@ -242,6 +331,10 @@ impl Create for Ec2KarpenterCreator {
             spec.configuration.cluster_name
         );
         let status = Command::new("eksctl")
+            .env(
+                "AWS_EKS_ENDPOINT",
+                "https://api.beta.us-west-2.wesley.amazonaws.com",
+            )
             .args([
                 "utils",
                 "associate-iam-oidc-provider",
@@ -263,12 +356,17 @@ impl Create for Ec2KarpenterCreator {
             ));
         }
 
+        // The iamserviceaccount needs permissions for listing secrets
         info!(
             "Creating iamserviceaccount for {}",
             spec.configuration.cluster_name
         );
 
         let status = Command::new("eksctl")
+            .env(
+                "AWS_EKS_ENDPOINT",
+                "https://api.beta.us-west-2.wesley.amazonaws.com",
+            )
             .args([
                 "create",
                 "iamserviceaccount",
@@ -306,22 +404,6 @@ impl Create for Ec2KarpenterCreator {
                 ),
             ));
         }
-
-        // Add tags to the cluster itself
-        // info!(
-        //     "Adding Karpenter tags to cluster: {:#?}",
-        //     &spec.configuration.cluster_name
-        // );
-        // let cluster_arn = eks_client
-        //     .describe_cluster(&spec.configuration.cluster_name)
-        //     .await?;
-        // eks_client
-        //     .tag_resource()
-        //     // .resource_arn(&spec.configuration.cluster_arn)
-        //     .tags("karpenter.sh/discovery", &spec.configuration.cluster_name)
-        //     .send()
-        //     .await
-        //     .context(resources, "Unable to tag cluster")?;
 
         info!(
             "Adding Karpenter tags to subnets: {:#?}",
@@ -374,6 +456,10 @@ impl Create for Ec2KarpenterCreator {
 
         info!("Creating iamidentitymapping for KarpenterInstanceNodeRole");
         let status = Command::new("eksctl")
+            .env(
+                "AWS_EKS_ENDPOINT",
+                "https://api.beta.us-west-2.wesley.amazonaws.com",
+            )
             .args([
                 "create",
                 "iamidentitymapping",
@@ -405,26 +491,101 @@ impl Create for Ec2KarpenterCreator {
             ));
         }
 
-        info!("Creating tainted managed nodegroup");
-        let status = Command::new("eksctl")
-            .args([
-                "create",
-                "nodegroup",
-                "-r",
-                &spec.configuration.region,
-                "--cluster",
-                spec.configuration.cluster_name.as_str(),
-                "--name",
-                TAINTED_NODEGROUP_NAME,
-            ])
-            .status()
-            .context(Resources::Clear, "Failed to create nodegroup")?;
-        if !status.success() {
-            return Err(ProviderError::new_with_context(
-                Resources::Clear,
-                format!("Failed to create nodegroup with status code {}", status),
-            ));
-        }
+        // Should we just use eks client here?
+        info!("Creating tainted managed nodegroup with EKS client");
+        // let status = Command::new("eksctl") // this wasn't working since the cluster wasn't originally created with eksctl
+        //     .env(
+        //         "AWS_EKS_ENDPOINT",
+        //         "https://api.beta.us-west-2.wesley.amazonaws.com",
+        //     )
+        //     .args([
+        //         "create",
+        //         "nodegroup",
+        //         "-r",
+        //         &spec.configuration.region,
+        //         "--cluster",
+        //         spec.configuration.cluster_name.as_str(),
+        //         "--name",
+        //         TAINTED_NODEGROUP_NAME,
+        //     ])
+        //     .status()
+        //     .context(Resources::Clear, "Failed to create nodegroup")?;
+
+        // Get node role; TODO: update this to be retrieved from cluster?
+        // I think this wrole is wrong! shouldn't reuse
+        // let node_role = "arn:aws:iam::359404537045:role/eksctl-testsys-nodegroup-ng-runne-NodeInstanceRole-KBR4E0X9ICGD"; // FIXME
+
+        // let node_role = format!(
+        //     "arn:aws:iam::{account_id}:role/KarpenterControllerRole-{}",
+        //     spec.configuration.cluster_name
+        // );
+
+        // info!("Using assume role '{:#?}'", spec.configuration.assume_role);
+
+        // eks_client
+        //     .create_nodegroup()
+        //     .nodegroup_name(TAINTED_NODEGROUP_NAME)
+        //     .cluster_name(&spec.configuration.cluster_name)
+        //     .set_subnets(Some(spec.configuration.subnet_ids))
+        //     .node_role(format!(
+        //         "{}-tainted-nodegroup-role",
+        //         spec.configuration.cluster_name
+        //     ))
+        //     .send()
+        //     .await
+        //     .context(resources, "Unable to create tainted nodegroup")?;
+
+        // info!("Checking that tainted nodegroup is ready");
+        // tokio::time::timeout(
+        //     Duration::from_secs(600),
+        //     wait_for_nodegroup(
+        //         &eks_client,
+        //         &spec.configuration.cluster_name,
+        //         TAINTED_NODEGROUP_NAME,
+        //     ),
+        // )
+        // .await
+        // .context(
+        //     resources,
+        //     "Timed out waiting for tainted nodegroup to be `ACTIVE`",
+        // )??;
+
+        // Let's try this instead of creating the node group:
+
+        // get the cluster's node group stack, if created for beta
+        // node_scaling_group=$(isengard 359404537045 Administrator exec -- \
+        //     aws cloudformation describe-stacks \
+        //       --stack-name "${CLUSTER_NAME}-node-group" \
+        //       --query "Stacks[].Outputs[]" \
+        //       --output json | jq -er '.[] | select(.OutputKey=="NodeAutoScalingGroup").OutputValue')
+
+        let cfn_client = aws_sdk_cloudformation::Client::new(&shared_config);
+
+        let node_group_stack_resource = cfn_client
+            .describe_stack_resource()
+            .logical_resource_id("NodeGroup")
+            .stack_name(format!("{}-node-group", &spec.configuration.cluster_name))
+            .send()
+            .await
+            .context(resources, "unable to find node group stack for cluster")?;
+
+        let nodegroup_name = node_group_stack_resource
+            .stack_resource_detail
+            .unwrap()
+            .physical_resource_id
+            .unwrap();
+
+        // Let's just try scaling the nodegroup
+        info!("scaling ASG");
+        let asg_client = aws_sdk_autoscaling::Client::new(&shared_config);
+        let _ = asg_client
+            .set_desired_capacity()
+            .auto_scaling_group_name(&nodegroup_name)
+            .desired_capacity(2)
+            .send()
+            .await
+            .context(resources, "Failed to scale up ASG");
+
         memo.tainted_nodegroup_exists = true;
         memo.current_status = "Tainting nodegroup".to_string();
         client
@@ -432,38 +593,41 @@ impl Create for Ec2KarpenterCreator {
             .await
             .context(resources, "Error sending message")?;
 
-        info!("Applying node taint and scaling nodegroup");
-        eks_client
-            .update_nodegroup_config()
-            .cluster_name(&spec.configuration.cluster_name)
-            .nodegroup_name(TAINTED_NODEGROUP_NAME)
-            .scaling_config(
-                NodegroupScalingConfig::builder()
-                    .min_size(2)
-                    .max_size(2)
-                    .desired_size(2)
-                    .build(),
-            )
-            // Apply a taint to prevent sonobuoy from using these nodes
-            .taints(
-                UpdateTaintsPayload::builder()
-                    .add_or_update_taints(
-                        Taint::builder()
-                            .key("sonobuoy")
-                            .value("ignore")
-                            .effect(TaintEffect::PreferNoSchedule)
-                            .build(),
-                    )
-                    .build(),
-            )
-            .send()
-            .await
-            .context(
-                resources,
-                "Unable to increase nodegroup size and apply taints",
-            )?;
+        // unable to increase and apply taints - resource not found
+        // nodeGroup aarch64-aws-k8s-131-ipv6-node-group-NodeGroup-cEvRTfhnoHym not found for cluster aarch64-aws-k8s-131-ipv6
+        // info!("Applying node taint and scaling nodegroup");
+        // eks_client
+        //     .update_nodegroup_config() // this only works for managed node groups
+        //     .cluster_name(&spec.configuration.cluster_name)
+        //     // .nodegroup_name(TAINTED_NODEGROUP_NAME)
+        //     .nodegroup_name(&nodegroup_name)
+        //     .scaling_config(
+        //         NodegroupScalingConfig::builder()
+        //             .min_size(2)
+        //             .max_size(2)
+        //             .desired_size(2)
+        //             .build(),
+        //     )
+        //     // Apply a taint to prevent sonobuoy from using these nodes
+        //     .taints(
+        //         UpdateTaintsPayload::builder()
+        //             .add_or_update_taints(
+        //                 Taint::builder()
+        //                     .key("sonobuoy")
+        //                     .value("ignore")
+        //                     .effect(TaintEffect::PreferNoSchedule)
+        //                     .build(),
+        //             )
+        //             .build(),
+        //     )
+        //     .send()
+        //     .await
+        //     .context(
+        //         resources,
+        //         "Unable to increase nodegroup size and apply taints",
+        //     )?;
 
-        info!("Creating helm template file");
+        info!("Creating helm template file"); // Now failing here - karpenter namespace issue? need to create IAM connected stuffs in karpenter ns?
         let status = Command::new("helm")
             .env("KUBECONFIG", CLUSTER_KUBECONFIG)
             .args([
@@ -682,52 +846,54 @@ spec:
         )??;
 
         // make nodes no schedule
-        info!("Waiting for tainted nodegroup to become active");
-        tokio::time::timeout(
-            Duration::from_secs(600),
-            wait_for_nodegroup(
-                &eks_client,
-                &spec.configuration.cluster_name,
-                TAINTED_NODEGROUP_NAME,
-            ),
-        )
-        .await
-        .context(
-            resources,
-            "Timed out waiting for tainted nodegroup to be `ACTIVE`",
-        )??;
-        info!("Making tainted nodegroup unschedulable");
-        eks_client
-            .update_nodegroup_config()
-            .cluster_name(&spec.configuration.cluster_name)
-            .nodegroup_name(TAINTED_NODEGROUP_NAME)
-            // Apply a taint to prevent sonobuoy from using these nodes
-            .taints(
-                UpdateTaintsPayload::builder()
-                    .add_or_update_taints(
-                        Taint::builder()
-                            .key("sonobuoy")
-                            .value("ignore")
-                            .effect(TaintEffect::NoSchedule)
-                            .build(),
-                    )
-                    .build(),
-            )
-            .send()
-            .await
-            .context(resources, "Unable to apply taints")?;
+        // info!("Waiting for tainted nodegroup to become active");
+        // tokio::time::timeout(
+        //     Duration::from_secs(600),
+        //     wait_for_nodegroup(
+        //         &eks_client,
+        //         &spec.configuration.cluster_name,
+        //         // TAINTED_NODEGROUP_NAME,
+        //         &nodegroup_name,
+        //     ),
+        // )
+        // .await
+        // .context(
+        //     resources,
+        //     "Timed out waiting for tainted nodegroup to be `ACTIVE`",
+        // )??;
+        // info!("Making tainted nodegroup unschedulable");
+        // eks_client
+        //     .update_nodegroup_config()
+        //     .cluster_name(&spec.configuration.cluster_name)
+        //     // .nodegroup_name(TAINTED_NODEGROUP_NAME)
+        //     .nodegroup_name(&nodegroup_name)
+        //     // Apply a taint to prevent sonobuoy from using these nodes
+        //     .taints(
+        //         UpdateTaintsPayload::builder()
+        //             .add_or_update_taints(
+        //                 Taint::builder()
+        //                     .key("sonobuoy")
+        //                     .value("ignore")
+        //                     .effect(TaintEffect::NoSchedule)
+        //                     .build(),
+        //             )
+        //             .build(),
+        //     )
+        //     .send()
+        //     .await
+        //     .context(resources, "Unable to apply taints")?;
 
         // watch for 2 nodes to have no schedule
-        info!("Waiting for nodes to be tainted");
-        tokio::time::timeout(
-            Duration::from_secs(600),
-            wait_for_tainted_nodes(&node_api, nodes),
-        )
-        .await
-        .context(
-            resources,
-            "Timed out waiting for karpenter nodes to join the cluster",
-        )??;
+        // info!("Waiting for nodes to be tainted");
+        // tokio::time::timeout(
+        //     Duration::from_secs(600),
+        //     wait_for_tainted_nodes(&node_api, nodes),
+        // )
+        // .await
+        // .context(
+        //     resources,
+        //     "Timed out waiting for karpenter nodes to join the cluster",
+        // )??;
 
         Ok(CreatedEc2Instances {})
     }
@@ -808,6 +974,7 @@ async fn wait_for_nodegroup(
     nodegroup: &str,
 ) -> ProviderResult<()> {
     loop {
+        // need endpoint here
         let status = eks_client
             .describe_nodegroup()
             .cluster_name(cluster)
@@ -896,25 +1063,40 @@ impl Destroy for Ec2KarpenterDestroyer {
         if memo.tainted_nodegroup_exists {
             let eks_client = aws_sdk_eks::Client::new(&shared_config);
 
+            // Change this one too
             info!("Writing cluster's kubeconfig to {}", CLUSTER_KUBECONFIG);
-            let status = Command::new("eksctl")
-                .args([
-                    "utils",
-                    "write-kubeconfig",
-                    "-r",
-                    &spec.configuration.region,
-                    &format!("--cluster={}", &spec.configuration.cluster_name),
-                    &format!("--kubeconfig={}", CLUSTER_KUBECONFIG),
-                ])
-                .status()
-                .context(Resources::Remaining, "Failed write kubeconfig")?;
+            // let status = Command::new("eksctl")
+            //     .args([
+            //         "utils",
+            //         "write-kubeconfig",
+            //         "-r",
+            //         &spec.configuration.region,
+            //         &format!("--cluster={}", &spec.configuration.cluster_name),
+            //         &format!("--kubeconfig={}", CLUSTER_KUBECONFIG),
+            //     ])
+            //     .status()
+            //     .context(Resources::Remaining, "Failed write kubeconfig")?;
+            match write_kubeconfig(
+                &spec.configuration.cluster_name,
+                &spec.configuration.eks_service_endpoint,
+                &spec.configuration.region,
+                Path::new(CLUSTER_KUBECONFIG),
+            ) {
+                Ok(_) => info!("Wrote kubeconfig to {}", CLUSTER_KUBECONFIG),
+                Err(error) => {
+                    return Err(ProviderError::new_with_context(
+                        Resources::Remaining,
+                        format!("Failed write kubeconfig with error {}", error),
+                    ));
+                }
+            };
 
-            if !status.success() {
-                return Err(ProviderError::new_with_context(
-                    Resources::Remaining,
-                    format!("Failed write kubeconfig with status code {}", status),
-                ));
-            }
+            // if !status.success() {
+            //     return Err(ProviderError::new_with_context(
+            //         Resources::Remaining,
+            //         format!("Failed write kubeconfig with status code {}", status),
+            //     ));
+            // }
 
             info!("Checking that tainted nodegroup is ready");
             tokio::time::timeout(
@@ -1007,6 +1189,10 @@ impl Destroy for Ec2KarpenterDestroyer {
 
             info!("Deleting tainted nodegroup");
             let status = Command::new("eksctl")
+                .env(
+                    "AWS_EKS_ENDPOINT",
+                    "https://api.beta.us-west-2.wesley.amazonaws.com",
+                )
                 .args([
                     "delete",
                     "nodegroup",
@@ -1071,6 +1257,10 @@ impl Destroy for Ec2KarpenterDestroyer {
         }
 
         let status = Command::new("eksctl")
+            .env(
+                "AWS_EKS_ENDPOINT",
+                "https://api.beta.us-west-2.wesley.amazonaws.com",
+            )
             .args([
                 "delete",
                 "iamserviceaccount",
